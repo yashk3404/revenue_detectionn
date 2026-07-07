@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 .env
 revenue_detective_test/
+.pytest_cache/
