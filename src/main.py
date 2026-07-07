@@ -18,7 +18,7 @@ except ImportError:  # pragma: no cover - fallback for minimal environments
         def shutdown(self) -> None:
             self.running = False
 
-from fastapi import Body, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
 
 from .activity_utils import normalize_activity_date, normalize_developer_id
 from .ai_service import (
@@ -58,6 +58,14 @@ settings = get_settings()
 app = FastAPI(title="Unbilled Revenue Detective API")
 scheduler = AsyncIOScheduler()
 
+
+async def verify_api_key(x_api_key: str = Header(...)):
+    import os
+    expected_key = os.getenv("API_KEY")
+    if not expected_key:
+        return
+    if x_api_key != expected_key:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 def serialize_doc(doc: dict[str, Any]) -> dict[str, Any]:
     doc["_id"] = str(doc["_id"])
@@ -200,7 +208,7 @@ async def health_check():
     return {"status": "MongoDB connected", "collections": collections}
 
 
-@app.post("/fetch_commits")
+@app.post("/fetch_commits", dependencies=[Depends(verify_api_key)])
 async def fetch_commits_endpoint(
     repo_owner: str | None = Query(default=None),
     repo_name: str | None = Query(default=None),
@@ -273,7 +281,7 @@ async def get_timesheets(limit: int = Query(default=100, ge=1, le=1000)):
     return {"timesheets": [serialize_doc(ts) for ts in timesheets]}
 
 
-@app.post("/timesheets")
+@app.post("/timesheets", dependencies=[Depends(verify_api_key)])
 async def upsert_timesheets(payload: dict[str, Any] | list[dict[str, Any]] = Body(...)):
     entries = payload if isinstance(payload, list) else [payload]
     inserted = 0
@@ -494,7 +502,7 @@ async def refresh_gaps():
         ) from exc
 
 
-@app.delete("/gaps/clear")
+@app.delete("/gaps/clear", dependencies=[Depends(verify_api_key)])
 async def clear_gaps():
     """Delete all documents from detected_gaps collection."""
     try:
@@ -601,7 +609,7 @@ async def import_timesheets_csv(file: UploadFile = File(...)):
     }
 
 # Phase 4: AI Analysis, Alerts, and Triage
-@app.post("/analyze_and_alert")
+@app.post("/analyze_and_alert", dependencies=[Depends(verify_api_key)])
 async def analyze_and_alert(payload: dict[str, Any] = Body(...)):
     """
     Full AI analysis of a gap and alert generation.
