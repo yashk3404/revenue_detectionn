@@ -4,7 +4,9 @@ Handles alert generation, persistence, and notification routing.
 """
 
 import os
+import smtplib
 from datetime import datetime, timezone
+from email.mime.text import MIMEText
 from typing import Any
 
 from .database import db
@@ -134,7 +136,7 @@ async def send_slack_notification(alert: dict[str, Any]) -> bool:
     try:
         import httpx
         
-        color = "#FF0000" if alert["severity"] == AlertSeverity.HIGH else (
+        color="#FF0000" if alert["severity"] == AlertSeverity.HIGH else (
             "#FFA500" if alert["severity"] == AlertSeverity.MEDIUM else "#00FF00"
         )
         
@@ -174,14 +176,37 @@ async def send_slack_notification(alert: dict[str, Any]) -> bool:
 async def send_email_notification(alert: dict[str, Any], recipient: str) -> bool:
     """
     Send alert notification via email.
-    
+
     Args:
         alert: Alert document
         recipient: Email address
-        
+
     Returns:
         True if sent successfully, False otherwise
     """
-    # Placeholder for email service integration (SendGrid, AWS SES, etc.)
-    # For now, return True to indicate the mechanism is in place.
-    return True
+    email_from = os.getenv("EMAIL_FROM")
+    email_password = os.getenv("EMAIL_APP_PASSWORD")
+
+    if not email_from or not email_password:
+        print("Email not configured: missing EMAIL_FROM or EMAIL_APP_PASSWORD")
+        return False
+
+    subject = f"Unbilled Revenue Alert: {alert.get('developer_id', 'Unknown developer')}"
+    body = alert.get("summary") or (
+        f"A gap was detected for {alert.get('developer_id', 'Unknown')} "
+        f"on {alert.get('date', 'Unknown date')}."
+    )
+
+    message = MIMEText(body)
+    message["Subject"] = subject
+    message["From"] = email_from
+    message["To"] = recipient
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=20) as server:
+            server.login(email_from, email_password)
+            server.sendmail(email_from, recipient, message.as_string())
+        return True
+    except Exception as e:
+        print(f"Failed to send email notification: {e}")
+        return False

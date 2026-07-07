@@ -34,6 +34,7 @@ from .alert_service import (
     get_pending_alerts,
     mark_alert_notified,
     resolve_alert,
+    send_email_notification,
     send_slack_notification,
 )
 from .config import get_settings
@@ -604,31 +605,32 @@ async def import_timesheets_csv(file: UploadFile = File(...)):
 async def analyze_and_alert(payload: dict[str, Any] = Body(...)):
     """
     Full AI analysis of a gap and alert generation.
-    
+
     Performs:
     - Gap classification (priority)
     - Timesheet suggestion
     - Alert generation and storage
     - Optional Slack notification
+    - Optional email notification
     """
     gap_id = payload.get("gap_id")
     developer_id = payload.get("developer_id")
     date = payload.get("date")
-    
+
     if not all([gap_id, developer_id, date]):
         raise HTTPException(
             status_code=400,
             detail="gap_id, developer_id, and date are required"
         )
-    
+
     try:
         # Get AI classifications
         priority = generate_gap_priority(payload)
         timesheet_suggestion = suggest_timesheet_entry(payload)
-        
+
         summary = payload.get("summary", "Gap analysis performed.")
         recommended_action = f"Review suggested timesheet: {timesheet_suggestion.get('hours', 0)}h on {timesheet_suggestion.get('project', 'Unknown')}"
-        
+
         # Generate and store alert
         alert = await generate_alert(
             gap_id=gap_id,
@@ -638,14 +640,22 @@ async def analyze_and_alert(payload: dict[str, Any] = Body(...)):
             summary=summary,
             recommended_action=recommended_action,
         )
-        
+
         # Send Slack notification if configured
-        await send_slack_notification(alert)
-        
+        slack_sent = await send_slack_notification(alert)
+
+        # Send email notification if a recipient email was provided
+        email_sent = False
+        recipient_email = payload.get("recipient_email")
+        if recipient_email:
+            email_sent = await send_email_notification(alert, recipient_email)
+
         return {
             "alert": alert,
             "priority": priority,
             "suggested_timesheet": timesheet_suggestion,
+            "slack_sent": slack_sent,
+            "email_sent": email_sent,
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to analyze and alert: {exc}") from exc
