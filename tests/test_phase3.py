@@ -24,6 +24,9 @@ class FakeCollection:
     async def to_list(self, limit):
         return self.docs[:limit]
 
+    async def count_documents(self, query):
+        return len(self.docs)
+
     async def find_one(self, query):
         for doc in self.docs:
             if all(doc.get(k) == v for k, v in query.items()):
@@ -54,6 +57,7 @@ class FakeDb:
     def __init__(self, timesheets=None):
         self.collections = {
             "timesheet_entries": FakeCollection(timesheets or []),
+            "activity_logs": FakeCollection([]),
             "detected_gaps": FakeCollection([]),
         }
 
@@ -106,6 +110,27 @@ class Phase3Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["new_gaps_saved"], 2)
         self.assertEqual(result["detected_gaps"][0]["reason"], "Timesheet logged 0 hours")
         self.assertEqual(result["detected_gaps"][1]["reason"], "Activity exists but no timesheet")
+
+    async def test_run_gap_detection_uses_cached_result_when_available(self):
+        fake_db = FakeDb(timesheets=[{"developer_id": "JOHN DOE", "date": "2026-07-01", "hours_logged": 0}])
+        footprints = [
+            {
+                "developer_id": "JOHN DOE",
+                "date": "2026-07-01",
+                "github_count": 1,
+                "slack_count": 0,
+                "jira_count": 0,
+                "total_activity_count": 1,
+            }
+        ]
+
+        with patch("src.main.db", fake_db), patch("src.main.build_all_footprints", new=AsyncMock(return_value=footprints)) as build_mock:
+            first = await run_gap_detection(10)
+            second = await run_gap_detection(10)
+
+        self.assertEqual(first["total_gaps"], 1)
+        self.assertEqual(second["total_gaps"], 1)
+        self.assertEqual(build_mock.await_count, 1)
 
     async def test_generate_ai_summary_returns_fallback_when_client_fails(self):
         class FailingClient:

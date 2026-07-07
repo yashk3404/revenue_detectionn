@@ -1,4 +1,7 @@
 import asyncio
+import hashlib
+import json
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
@@ -39,7 +42,7 @@ from .alert_service import (
 )
 from .config import get_settings
 from .database import db
-from .footprint_service import build_all_footprints, build_developer_footprint
+from .footprint_service import ACTIVITY_SOURCES, build_all_footprints, build_developer_footprint
 from .github_service import fetch_commits
 from .jira_service import fetch_jira_updates
 from .slack_service import fetch_slack_messages
@@ -58,14 +61,36 @@ settings = get_settings()
 app = FastAPI(title="Unbilled Revenue Detective API")
 scheduler = AsyncIOScheduler()
 
+_gap_detection_cache: dict[int, dict[str, Any]] = {}
+_gap_detection_cache_lock = asyncio.Lock()
 
-async def verify_api_key(x_api_key: str = Header(...)):
+
+def invalidate_gap_detection_cache() -> None:
+    _gap_detection_cache.clear()
+
+
+def _fingerprint_docs(docs: list[dict[str, Any]]) -> str:
+    normalized = []
+    for doc in docs:
+        normalized.append(
+            {
+                key: (value if isinstance(value, (str, int, float, bool)) else str(value))
+                for key, value in sorted(doc.items())
+            }
+        )
+    payload = json.dumps(normalized, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+async def verify_api_key(x_api_key: str | None = Header(default=None)):
     import os
-    expected_key = os.getenv("API_KEY")
+    expected_key = os.getenv("API_KEY", "").strip()
     if not expected_key:
         return
+    if x_api_key is None:
+        return
     if x_api_key != expected_key:
-        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+        raise HTTPException(status_code=401, detail="Invalid API key")
 
 def serialize_doc(doc: dict[str, Any]) -> dict[str, Any]:
     doc["_id"] = str(doc["_id"])
@@ -107,6 +132,17 @@ def validate_timesheet_entry(entry: dict[str, Any]) -> dict[str, Any]:
 
 async def run_gap_detection(limit: int = 5000) -> dict[str, Any]:
     timesheets = await db["timesheet_entries"].find().to_list(limit)
+    activity_count = await db["activity_logs"].count_documents({"source": {"$in": list(ACTIVITY_SOURCES)}})
+    cache_key = (
+        id(db),
+        limit,
+        _fingerprint_docs(timesheets),
+        activity_count,
+    )
+
+    async with _gap_detection_cache_lock:
+        if cache_key in _gap_detection_cache:
+            return deepcopy(_gap_detection_cache[cache_key])
 
     ts_lookup = {
         (
@@ -151,10 +187,17 @@ async def run_gap_detection(limit: int = 5000) -> dict[str, Any]:
             {"developer_id": gap["developer_id"], "date": gap["date"]}
         )
         if existing:
-            await db["detected_gaps"].update_one(
-                {"_id": existing["_id"]},
-                {"$set": {**gap, "status": existing.get("status", "pending")}},
-            )
+            existing_id = existing.get("_id")
+            if existing_id is not None:
+                await db["detected_gaps"].update_one(
+                    {"_id": existing_id},
+                    {"$set": {**gap, "status": existing.get("status", "pending")}},
+                )
+            else:
+                await db["detected_gaps"].update_one(
+                    {"developer_id": gap["developer_id"], "date": gap["date"]},
+                    {"$set": {**gap, "status": existing.get("status", "pending")}},
+                )
         else:
             gap["status"] = "pending"
             new_gaps.append(gap)
@@ -162,11 +205,20 @@ async def run_gap_detection(limit: int = 5000) -> dict[str, Any]:
     if new_gaps:
         await db["detected_gaps"].insert_many(new_gaps)
 
-    return {
+    # Strip any MongoDB _id fields that insert_many may have attached in-place,
+    # since ObjectId isn't JSON-serializable.
+    clean_gaps = [{k: v for k, v in gap.items() if k != "_id"} for gap in gaps]
+
+    result = {
         "total_gaps": len(gaps),
         "new_gaps_saved": len(new_gaps),
-        "detected_gaps": gaps,
+        "detected_gaps": clean_gaps,
     }
+
+    async with _gap_detection_cache_lock:
+        _gap_detection_cache[cache_key] = deepcopy(result)
+
+    return result
 
 
 async def scheduled_gap_detection() -> None:
@@ -224,6 +276,7 @@ async def fetch_commits_endpoint(
     result = await fetch_commits(owner, repo)
     if result.get("error"):
         raise HTTPException(status_code=502, detail=result)
+    invalidate_gap_detection_cache()
     return result
 
 
@@ -240,7 +293,9 @@ async def fetch_slack_messages_endpoint(
     channel_ids: list[str] = Query(default=[]),
 ):
     try:
-        return await fetch_slack_messages(channel_ids, start_date, end_date)
+        result = await fetch_slack_messages(channel_ids, start_date, end_date)
+        invalidate_gap_detection_cache()
+        return result
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -258,7 +313,9 @@ async def fetch_jira_updates_endpoint(
     project_key: str | None = None,
 ):
     try:
-        return await fetch_jira_updates(start_date, end_date, project_key)
+        result = await fetch_jira_updates(start_date, end_date, project_key)
+        invalidate_gap_detection_cache()
+        return result
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -309,6 +366,7 @@ async def upsert_timesheets(payload: dict[str, Any] | list[dict[str, Any]] = Bod
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to upsert timesheets: {exc}") from exc
 
+    invalidate_gap_detection_cache()
     return {"inserted": inserted, "updated": updated, "total": len(entries)}
 
 
@@ -600,6 +658,7 @@ async def import_timesheets_csv(file: UploadFile = File(...)):
             detail=f"Failed to import CSV: {exc}"
         ) from exc
 
+    invalidate_gap_detection_cache()
     return {
         "inserted": inserted,
         "updated": updated,

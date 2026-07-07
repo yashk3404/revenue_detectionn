@@ -51,7 +51,7 @@ def headers():
 
 def api_get(path, params=None):
     try:
-        r = requests.get(f"{base_url}{path}", headers=headers(), params=params, timeout=20)
+        r = requests.get(f"{base_url}{path}", headers=headers(), params=params, timeout=200)
         if r.status_code >= 400:
             st.error(f"GET {path} failed ({r.status_code}): {r.text}")
             return None
