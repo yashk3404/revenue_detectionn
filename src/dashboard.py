@@ -61,14 +61,14 @@ def api_get(path, params=None):
         return None
 
 
-def api_post(path, json=None, files=None):
+def api_post(path, json=None, files=None, timeout=30):
     try:
         if files:
             r = requests.post(f"{base_url}{path}",
                                headers={k: v for k, v in headers().items() if k != "Content-Type"},
-                               files=files, timeout=30)
+                               files=files, timeout=90)
         else:
-            r = requests.post(f"{base_url}{path}", headers=headers(), json=json, timeout=30)
+            r = requests.post(f"{base_url}{path}", headers=headers(), json=json, timeout=timeout)
         if r.status_code >= 400:
             st.error(f"POST {path} failed ({r.status_code}): {r.text}")
             return None
@@ -155,6 +155,7 @@ if page == "Overview":
             result = api_post("/refresh_gaps")
             if result:
                 st.success(f"{result.get('new_total_gaps', '?')} total gaps, {result.get('new_gaps_saved', '?')} new.")
+                st.rerun()
 
     with col2:
         st.subheader("🤖 Summarize pending gaps")
@@ -317,12 +318,14 @@ elif page == "Gaps":
     top1, top2, top3 = st.columns([1, 1, 2])
     with top1:
         if st.button("🔄 Refresh gap detection"):
-            api_post("/refresh_gaps")
-            st.rerun()
+            result = api_post("/refresh_gaps")
+            if result:
+                st.rerun()
     with top2:
         if st.button("🗑️ Clear all gaps"):
-            api_delete("/gaps/clear")
-            st.rerun()
+            result = api_delete("/gaps/clear")
+            if result:
+                st.rerun()
 
     check_result = api_get("/check_gaps")
     gaps_data = api_get("/detected_gaps")
@@ -348,17 +351,17 @@ elif page == "Gaps":
         c1, c2, c3 = st.columns(3)
         with c1:
             if st.button("📋 Classify Priority"):
-                result = api_post("/classify_gap", json=gap)
+                result = api_post("/classify_gap", json=gap, timeout=90)
                 if result:
                     st.info(priority_badge(result.get("classification")))
         with c2:
             if st.button("✍️ Suggest Timesheet Entry"):
-                result = api_post("/suggest_timesheet", json=gap)
+                result = api_post("/suggest_timesheet", json=gap, timeout=90)
                 if result:
                     st.info(result.get("suggested_timesheet"))
         with c3:
             if st.button("🔗 Match to Project"):
-                result = api_post("/match_activity", json=gap)
+                result = api_post("/match_activity", json=gap, timeout=90)
                 if result:
                     st.info(result.get("match"))
 
@@ -406,11 +409,17 @@ elif page == "Developers":
         with col1:
             st.subheader("Logged Timesheets")
             df = df_or_none(dev_ts)
-            st.dataframe(df, use_container_width=True, hide_index=True) if df is not None else st.write("No entries.")
+            if df is not None:
+                st.dataframe(df, use_container_width=True, hide_index=True)
+            else:
+                st.write("No entries.")
         with col2:
             st.subheader("Detected Gaps")
             df = df_or_none(dev_gaps)
-            st.dataframe(df, use_container_width=True, hide_index=True) if df is not None else st.write("No gaps. 🎉")
+            if df is not None:
+                st.dataframe(df, use_container_width=True, hide_index=True)
+            else:
+                st.write("No gaps. 🎉")
 
 # ===========================================================================
 # ALERTS
@@ -433,17 +442,22 @@ elif page == "Alerts":
                     c1, c2 = st.columns(2)
                     alert_id = alert.get("_id") or alert.get("id")
                     if c1.button("✅ Mark Notified", key=f"notify_{alert_id}"):
-                        api_post(f"/alerts/{alert_id}/mark_notified")
-                        st.rerun()
+                        result = api_post(f"/alerts/{alert_id}/mark_notified")
+                        if result:
+                            st.rerun()
                     if c2.button("☑️ Resolve", key=f"resolve_{alert_id}"):
-                        api_post(f"/alerts/{alert_id}/resolve")
-                        st.rerun()
+                        result = api_post(f"/alerts/{alert_id}/resolve")
+                        if result:
+                            st.rerun()
 
     with tab2:
         history = api_get("/alerts/history")
         history_list = history if isinstance(history, list) else (history.get("alerts", []) if history else [])
         df = df_or_none(history_list)
-        st.dataframe(df, use_container_width=True, hide_index=True) if df is not None else st.info("No alert history yet.")
+        if df is not None:
+            st.dataframe(df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No alert history yet.")
 
 # ===========================================================================
 # ASK AI
@@ -468,7 +482,7 @@ elif page == "Ask AI":
                 st.warning("Type a question first.")
             else:
                 payload = {**gap, "question": question}
-                result = api_post("/ask", json=payload)
+                result = api_post("/ask", json=payload, timeout=90)
                 if result:
                     st.success(result.get("answer"))
 

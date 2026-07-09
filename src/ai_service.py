@@ -36,7 +36,8 @@ def _call_gemini(prompt: str, max_retries: int | None = None) -> str | None:
                 contents=prompt,
             )
             return response.text.strip()
-        except Exception:
+        except Exception as e:
+            print(f"[Gemini call failed] attempt {attempt}/{effective_retries}: {type(e).__name__}: {e}")
             if attempt == effective_retries:
                 return None
             if retry_delay > 0:

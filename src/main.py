@@ -108,10 +108,8 @@ async def verify_api_key(x_api_key: str | None = Header(default=None)):
     import os
     expected_key = os.getenv("API_KEY", "").strip()
     if not expected_key:
-        return
-    if x_api_key is None:
-        return
-    if x_api_key != expected_key:
+        return  # No API_KEY configured on the backend — protection is off entirely
+    if x_api_key is None or x_api_key != expected_key:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
 def serialize_doc(doc: dict[str, Any]) -> dict[str, Any]:
@@ -421,10 +419,28 @@ async def get_jira_activity(limit: int = Query(default=100, ge=1, le=1000)):
 
 
 @app.get("/developers")
-async def get_developers(limit: int = Query(default=100, ge=1, le=1000)):
-    developers = await db["developers"].find().to_list(limit)
-    return {"developers": [serialize_doc(dev) for dev in developers]}
+async def get_developers(limit: int = Query(default=5000, ge=1, le=5000)):
+    # Get every distinct developer_id from actual tracked activity
+    activity_dev_ids = await db["activity_logs"].distinct("developer_id")
+    activity_dev_ids = {normalize_developer_id(d) for d in activity_dev_ids if d}
 
+    # Get any manually-curated metadata that exists (name, team, etc.)
+    curated_docs = await db["developers"].find().to_list(5000)
+    curated_map = {
+        normalize_developer_id(d.get("developer_id", d.get("_id", ""))): d
+        for d in curated_docs
+    }
+
+    # Merge: every real tracked developer gets a record, enriched with curated info if available
+    merged = []
+    for dev_id in sorted(activity_dev_ids):
+        base = {"developer_id": dev_id}
+        extra = curated_map.get(dev_id)
+        if extra:
+            base.update({k: v for k, v in extra.items() if k not in ("_id", "developer_id")})
+        merged.append(base)
+
+    return {"developers": merged[:limit]}
 
 @app.get("/timesheets")
 async def get_timesheets(limit: int = Query(default=100, ge=1, le=1000)):
