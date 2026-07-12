@@ -260,6 +260,41 @@ async def scheduled_gap_detection() -> None:
     except Exception as exc:
         print(f"Automatic gap detection failed: {exc}")
 
+async def scheduled_data_sync() -> None:
+    """Automatically pull fresh GitHub/Slack/Jira activity on a timer,
+    so new developer activity shows up without anyone clicking Fetch."""
+    timestamp = datetime.now(timezone.utc).isoformat()
+
+    if settings.github_owner and settings.github_repo:
+        try:
+            result = await fetch_commits(settings.github_owner, settings.github_repo)
+            print(f"[auto-sync {timestamp}] GitHub: {result}")
+        except Exception as exc:
+            print(f"[auto-sync {timestamp}] GitHub fetch failed: {exc}")
+
+    channel_ids = [c.strip() for c in (settings.slack_channel_ids or "").split(",") if c.strip()]
+    if settings.slack_bot_token and channel_ids:
+        try:
+            from datetime import timedelta
+            end = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            start = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+            result = await fetch_slack_messages(channel_ids, start, end)
+            print(f"[auto-sync {timestamp}] Slack: {result}")
+        except Exception as exc:
+            print(f"[auto-sync {timestamp}] Slack fetch failed: {exc}")
+
+    if settings.jira_base_url and settings.jira_project_key:
+        try:
+            from datetime import timedelta
+            end = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            start = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+            result = await fetch_jira_updates(start, end, settings.jira_project_key)
+            print(f"[auto-sync {timestamp}] Jira: {result}")
+        except Exception as exc:
+            print(f"[auto-sync {timestamp}] Jira fetch failed: {exc}")
+
+    invalidate_gap_detection_cache()
+
 
 async def write_detected_gaps_snapshot(limit: int = 5000) -> dict[str, Any]:
     """Compute gap detection and store a ready-to-serve snapshot in the DB.
@@ -301,7 +336,17 @@ async def start_gap_detection_scheduler():
             id="automatic_gap_detection",
             replace_existing=True,
         )
+        # Automatically pull new GitHub/Slack/Jira activity so developers
+        # and their commits/messages show up without a manual "Fetch" click.
+        scheduler.add_job(
+            scheduled_data_sync,
+            "interval",
+            minutes=30,
+            id="automatic_data_sync",
+            replace_existing=True,
+        )
         # Also precompute a snapshot more frequently so the API can return
+        # results instantly without running expensive detection on request.
         # results instantly without running expensive detection on request.
         scheduler.add_job(
             write_detected_gaps_snapshot,
