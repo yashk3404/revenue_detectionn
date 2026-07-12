@@ -31,10 +31,20 @@ api_key = st.sidebar.text_input(
     help="Needed for protected endpoints: add timesheets, clear gaps, analyze & alert, fetch commits."
 )
 
-page = st.sidebar.radio(
-    "Navigate",
-    ["Overview", "Data Sync", "Timesheets", "Gaps", "Developers", "Alerts", "Ask AI", "System Health"],
-)
+is_manager = bool(api_key)
+
+if is_manager:
+    st.sidebar.success("Manager mode — full access")
+    page = st.sidebar.radio(
+        "Navigate",
+        ["Overview", "Data Sync", "Timesheets", "Gaps", "Developers", "Alerts", "Ask AI", "System Health"],
+    )
+else:
+    st.sidebar.info("Employee mode — enter the API key above for manager access")
+    page = st.sidebar.radio(
+        "Navigate",
+        ["My Timesheet"],
+    )
 
 st.sidebar.divider()
 st.sidebar.caption("Start your FastAPI backend before using this dashboard.")
@@ -588,3 +598,91 @@ elif page == "System Health":
     st.divider()
     st.write("**Connected to:**", base_url)
     st.write("**API key set:**", "Yes" if api_key else "No (some endpoints will fail with 401)")
+    # ===========================================================================
+# MY TIMESHEET (employee self-service, no API key required)
+# ===========================================================================
+elif page == "My Timesheet":
+    st.title("My Timesheet")
+    st.caption("Pick your name, review your gaps, get AI help, and fill in your entry.")
+    if st.session_state.pop("my_timesheet_success", False):
+        st.success("Timesheet entry saved. Thank you!")
+
+    devs_data = api_get("/developers")
+    developer_records = devs_data.get("developers", []) if devs_data else []
+
+    if not developer_records:
+        st.info("No developers found yet — ask your manager to sync data first.")
+    else:
+        dev_lookup = {
+            (d.get("name") or d.get("developer_id")): d.get("developer_id")
+            for d in developer_records
+        }
+        my_display_name = st.selectbox("Who are you?", list(dev_lookup.keys()))
+        my_name = dev_lookup[my_display_name]
+
+        gaps_data = api_get("/detected_gaps")
+        all_gaps = gaps_data.get("detected_gaps", []) if gaps_data else []
+        my_gaps = [
+            g for g in all_gaps
+            if g.get("developer_id") == my_name and g.get("status") != "resolved"
+        ]
+        st.subheader(f"Your gaps ({len(my_gaps)})")
+        if not my_gaps:
+            st.success("No gaps found for you. You're all caught up!")
+        else:
+            gap_options = [g.get("date") for g in my_gaps]
+            chosen_date = st.selectbox("Pick a date to fix", gap_options)
+            gap = my_gaps[gap_options.index(chosen_date)]
+            st.json(gap, expanded=False)
+
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("📋 Why is this flagged?"):
+                    result = api_post("/classify_gap", json=gap, timeout=90)
+                    if result:
+                        classification = result.get("classification", "")
+                        if ":" in classification:
+                            label, reasoning = classification.split(":", 1)
+                            st.markdown(f"**{label.strip()}**\n\n{reasoning.strip()}")
+                        else:
+                            st.markdown(classification)
+            with c2:
+                if st.button("✍️ Suggest what to fill in"):
+                    result = api_post("/suggest_timesheet", json=gap, timeout=90)
+                    if result:
+                        suggestion = result.get("suggested_timesheet") or {}
+                        st.session_state["my_suggested_hours"] = suggestion.get("hours", 0)
+                        st.session_state["my_suggested_project"] = suggestion.get("project", "")
+                        st.session_state["my_suggested_note"] = suggestion.get("note", "")
+                        st.markdown(
+                            f"**Suggested Timesheet Entry**\n\n"
+                            f"- **Hours:** {suggestion.get('hours', 0)}\n"
+                            f"- **Project:** {suggestion.get('project', 'Unknown')}\n"
+                            f"- **Note:** {suggestion.get('note', 'N/A')}"
+                        )
+
+            st.divider()
+            st.subheader("Fill in your timesheet entry")
+            with st.form("my_timesheet_form"):
+                hours = st.number_input(
+                    "Hours", min_value=0.0, max_value=24.0, step=0.5,
+                    value=float(st.session_state.get("my_suggested_hours", 0)),
+                )
+                project = st.text_input(
+                    "Project", value=st.session_state.get("my_suggested_project", "")
+                )
+                note = st.text_area(
+                    "Note", value=st.session_state.get("my_suggested_note", "")
+                )
+                submitted = st.form_submit_button("Submit Timesheet Entry")
+                if submitted:
+                    result = api_put(
+                        f"/timesheets/{my_name}/{chosen_date}",
+                        json={"hours_logged": hours, "project": project, "notes": note},
+                    )
+                    if result:
+                        st.session_state["my_timesheet_success"] = True
+                        st.session_state.pop("my_suggested_hours", None)
+                        st.session_state.pop("my_suggested_project", None)
+                        st.session_state.pop("my_suggested_note", None)
+                        st.rerun()
