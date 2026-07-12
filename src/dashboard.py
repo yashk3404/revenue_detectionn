@@ -174,7 +174,7 @@ if page == "Overview":
 
     with col2:
         st.subheader("🤖 Summarize pending gaps")
-        sst.write("Runs Groq over all pending gaps.")
+        st.write("Runs Groq over all pending gaps.")
         if st.button("Summarize Pending Gaps", use_container_width=True):
             with st.spinner("Summarizing pending gaps — this can take a while..."):
                 result = api_get("/summarize_gaps", timeout=900)
@@ -202,7 +202,11 @@ elif page == "Data Sync":
         if st.button("⬇️ Fetch latest commits"):
             result = api_post("/fetch_commits")
             if result:
-                st.success(result)
+                st.success(
+                    f"Fetched **{result.get('fetched', 0)}** commits from "
+                    f"`{result.get('repo', 'unknown repo')}` — "
+                    f"**{result.get('saved', 0)}** new saved."
+                )
         commits = api_get("/commits")
         df = df_or_none(commits.get("commits", commits) if isinstance(commits, dict) else commits)
         if df is not None:
@@ -215,7 +219,12 @@ elif page == "Data Sync":
         if st.button("⬇️ Fetch latest Slack messages"):
             result = api_post("/fetch_slack_messages")
             if result:
-                st.success(result)
+                channels = ", ".join(result.get("channels", []) or []) or "no channels"
+                st.success(
+                    f"Fetched **{result.get('fetched', 0)}** messages from {channels} — "
+                    f"**{result.get('saved', 0)}** new saved "
+                    f"({result.get('start_date', '?')} to {result.get('end_date', '?')})."
+                )
         slack = api_get("/slack_activity")
         df = df_or_none(slack.get("slack_activity", slack) if isinstance(slack, dict) else slack)
         if df is not None:
@@ -228,7 +237,12 @@ elif page == "Data Sync":
         if st.button("⬇️ Fetch latest Jira updates"):
             result = api_post("/fetch_jira_updates")
             if result:
-                st.success(result)
+                st.success(
+                    f"Fetched **{result.get('fetched', 0)}** updates from project "
+                    f"`{result.get('project_key', 'unknown')}` — "
+                    f"**{result.get('saved', 0)}** new saved "
+                    f"({result.get('start_date', '?')} to {result.get('end_date', '?')})."
+                )
         jira = api_get("/jira_activity")
         df = df_or_none(jira.get("jira_activity", jira) if isinstance(jira, dict) else jira)
         if df is not None:
@@ -399,7 +413,13 @@ elif page == "Gaps":
             if st.button("✍️ Suggest Timesheet Entry"):
                 result = api_post("/suggest_timesheet", json=gap, timeout=90)
                 if result:
-                    st.info(result.get("suggested_timesheet"))
+                    suggestion = result.get("suggested_timesheet") or {}
+                    st.markdown(
+                        f"**Suggested Timesheet Entry**\n\n"
+                        f"- **Hours:** {suggestion.get('hours', 0)}\n"
+                        f"- **Project:** {suggestion.get('project', 'Unknown')}\n"
+                        f"- **Note:** {suggestion.get('note', 'N/A')}"
+                    )
         with c3:
             if st.button("🔗 Match to Project"):
                 result = api_post("/match_activity", json=gap, timeout=90)
@@ -420,7 +440,17 @@ elif page == "Gaps":
                 payload["recipient_email"] = recipient_email
             result = api_post("/analyze_and_alert", json=payload)
             if result:
-                st.success(result)
+                suggestion = result.get("suggested_timesheet") or {}
+                st.success("Alert processed.")
+                st.markdown(
+                    f"**Priority:** {result.get('priority', 'Unknown')}\n\n"
+                    f"**Suggested Timesheet Entry**\n"
+                    f"- **Hours:** {suggestion.get('hours', 0)}\n"
+                    f"- **Project:** {suggestion.get('project', 'Unknown')}\n"
+                    f"- **Note:** {suggestion.get('note', 'N/A')}\n\n"
+                    f"**Slack sent:** {'✅' if result.get('slack_sent') else '❌'}  \n"
+                    f"**Email sent:** {'✅' if result.get('email_sent') else '❌'}"
+                )
 
 # ===========================================================================
 # DEVELOPERS
