@@ -27,7 +27,7 @@ st.set_page_config(
 st.sidebar.title("🕵️ Unbilled Revenue Detective")
 base_url = st.sidebar.text_input(
     "Backend URL",
-    value=os.getenv("BACKEND_URL", "http://127.0.0.1:8001"),
+    value=os.getenv("BACKEND_URL", "https://revenue-detectionn.onrender.com"),
 )
 api_key = st.sidebar.text_input(
     "API Key (x-api-key)", type="password",
